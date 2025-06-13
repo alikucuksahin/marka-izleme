@@ -1,0 +1,152 @@
+import jellyfish # Fonetik ve dize benzerliği için
+
+# --- ALGORİTMANIN ÇEKİRDEK FONKSİYONLARI ---
+
+def calculate_jaccard_similarity(set1, set2):
+    """
+    İki kelime kümesi arasındaki Jaccard Benzerliğini hesaplar.
+    Bu, kelime sırasından bağımsız benzerliği ölçer.
+    """
+    intersection = len(set1.intersection(set2))
+    union = len(set1.union(set2))
+    
+    if union == 0:
+        return 0.0
+    return intersection / union
+
+def calculate_similarity(search_term, bulletin_mark, weights):
+    """
+    Bir arama ibaresi ile bir bülten markası arasındaki nihai benzerlik puanını hesaplar.
+    İlk olarak tam eşleşme kontrol edilir, yoksa gelişmiş puanlama yapılır.
+    
+    Args:
+        search_term (str): Portföyden gelen, aranacak anahtar ibare.
+        bulletin_mark (str): Bültenden gelen, karşılaştırılacak marka adı.
+        weights (dict): Puanlama ağırlıklarını içeren sözlük.
+        
+    Returns:
+        dict: Marka adı, puan ve eşleşme türünü içeren bir sözlük.
+    """
+    # Karşılaştırma için metinleri küçük harfe çevir ve normalleştir
+    search_term_norm = search_term.lower()
+    bulletin_mark_norm = bulletin_mark.lower()
+
+    # 1. Adım: Tam Eşleşme Kontrolü (En Yüksek Öncelik)
+    if search_term_norm in bulletin_mark_norm:
+        return {
+            'bulletin_mark': bulletin_mark,
+            'score': 1.0,
+            'match_type': 'Tam Eşleşme'
+        }
+
+    # 2. Adım: Benzerlik Puanlaması (Tam Eşleşme Yoksa)
+    
+    # a) Fonetik Puan (Double Metaphone kullanarak)
+    # Not: dmetaphone İngilizce odaklıdır ama birçok dil için temel sesleri yakalar.
+    # Türkçe'ye özel fonetik kütüphaneler daha hassas sonuçlar verebilir.
+    try:
+        search_phonetic = jellyfish.dmetaphone(search_term_norm)
+        bulletin_phonetic = jellyfish.dmetaphone(bulletin_mark_norm)
+        # Birincil fonetik kodlar eşleşiyorsa tam puan ver
+        score_f = 1.0 if search_phonetic[0] and search_phonetic[0] == bulletin_phonetic[0] else 0.0
+    except IndexError: # Bazı özel karakterlerde hata verebilir
+        score_f = 0.0
+
+    # b) Dize Benzerliği Puanı (Jaro-Winkler kullanarak)
+    score_d = jellyfish.jaro_winkler_similarity(search_term_norm, bulletin_mark_norm)
+
+    # c) Kelime Kümesi Puanı (Jaccard kullanarak)
+    tokens_search = set(search_term_norm.split())
+    tokens_bulletin = set(bulletin_mark_norm.split())
+    score_k = calculate_jaccard_similarity(tokens_search, tokens_bulletin)
+
+    # 3. Adım: Ağırlıklı Nihai Puan
+    final_score = (
+        (score_f * weights['phonetic']) +
+        (score_d * weights['string']) +
+        (score_k * weights['token'])
+    )
+    
+    return {
+        'bulletin_mark': bulletin_mark,
+        'score': round(final_score, 4), # Sonucu 4 ondalık basamağa yuvarla
+        'match_type': 'Benzer'
+    }
+
+def run_brand_watch(portfolio_term, bulletin_marks, threshold=0.70):
+    """
+    Portföydeki bir ibare için tüm bülten listesini tarar,
+    sonuçları filtreler ve istenen formata göre sıralar.
+    
+    Args:
+        portfolio_term (str): Takip edilecek anahtar ibare.
+        bulletin_marks (list): Bültendeki marka isimlerinin listesi.
+        threshold (float): Benzer sonuçları göstermek için minimum puan eşiği.
+        
+    Returns:
+        list: Sıralanmış ve filtrelenmiş sonuçların listesi.
+    """
+    # Ağırlıkları burada tanımlayabiliriz
+    weights = {
+        'phonetic': 0.4,
+        'string': 0.4,
+        'token': 0.2
+    }
+    
+    results = []
+    for mark in bulletin_marks:
+        result = calculate_similarity(portfolio_term, mark, weights)
+        results.append(result)
+        
+    # Sonuçları Filtrele ve Sırala
+    exact_matches = [res for res in results if res['match_type'] == 'Tam Eşleşme']
+    
+    similar_matches = [
+        res for res in results 
+        if res['match_type'] == 'Benzer' and res['score'] >= threshold
+    ]
+    
+    # Benzer eşleşmeleri puanlarına göre büyükten küçüğe sırala
+    similar_matches.sort(key=lambda x: x['score'], reverse=True)
+    
+    # Nihai listeyi birleştir: Önce tam eşleşmeler, sonra sıralı benzerler
+    final_sorted_list = exact_matches + similar_matches
+    
+    return final_sorted_list
+
+# --- KODUN KULLANIM ÖRNEĞİ ---
+
+if __name__ == "__main__":
+    # 1. GİRDİLER
+    # Portföyümüzden takip etmek istediğimiz anahtar ibare
+    portfolio_search_term = "Anadolu Kartalı"
+    
+    # Yeni yayınlanan Resmi Marka Bülteni'nden gelen marka listesi (Örnek Veri)
+    official_bulletin_marks = [
+        "Marmara İncisi Gıda",
+        "Anadolu Kartalı İçecek Sanayi", # Tam eşleşme
+        "Kartalı Anadolu Tekstil",       # Kelime sırası değişik (Jaccard)
+        "Anadoolu Kartalı",             # Yazım hatası (Jaro-Winkler)
+        "Anadolu Aslanı",               # Kısmi benzerlik
+        "Anadalu Kardalı Lojistik",     # Fonetik ve yazım hatası
+        "Avrupa Kaplanı",
+        "Kartal Yuvası",
+        "Anka Kuşu Efsanesi"
+    ]
+    
+    # 2. ALGORİTMAYI ÇALIŞTIRMA
+    print(f"Aranan İbare: '{portfolio_search_term}'\n" + "-"*30)
+    
+    found_marks = run_brand_watch(portfolio_search_term, official_bulletin_marks)
+    
+    # 3. SONUÇLARI GÖSTERME
+    if not found_marks:
+        print("Belirtilen eşiğin üzerinde benzer marka bulunamadı.")
+    else:
+        print("TESPİT EDİLEN BENZER MARKALAR:\n")
+        for mark in found_marks:
+            print(
+                f"Marka Adı: {mark['bulletin_mark']}\n"
+                f"  -> Eşleşme Türü: {mark['match_type']}\n"
+                f"  -> Benzerlik Puanı: {mark['score']:.2f}\n" # Puanı 2 ondalıkla göster
+            )
